@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+
 android {
     namespace = "com.irsyad.chilidisease"
     compileSdk {
@@ -18,15 +19,24 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters.add("armeabi-v7a")
+            abiFilters.add("arm64-v8a")
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            isMinifyEnabled = false
         }
     }
     compileOptions {
@@ -39,6 +49,7 @@ android {
     buildFeatures {
         compose = true
     }
+
 }
 
 dependencies {
@@ -62,12 +73,18 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
-    // TFLite
-    implementation(libs.tensorflow.lite.task.vision)
-    implementation(libs.tensorflow.lite.gpu)
+// --- Tensorflow Lite (Sesuai TOML) ---
     implementation(libs.tensorflow.lite)
-    implementation(libs.tensorflow.lite.gpu)
+    implementation(libs.tensorflow.lite.gpu) // Ini yang bikin kencang (30 FPS)
+    implementation(libs.tensorflow.lite.gpu.api)
     implementation(libs.tensorflow.lite.support)
+    implementation(libs.tensorflow.lite.metadata)
+
+    // --- Utils ---
+    implementation(libs.accompanist.permissions)
+
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.compose.material.icons.extended)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)

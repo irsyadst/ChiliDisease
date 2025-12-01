@@ -3,8 +3,11 @@ package com.irsyad.chilidisease
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
+import android.util.Log
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
+import org.tensorflow.lite.gpu.CompatibilityList // Wajib untuk GPU
+import org.tensorflow.lite.gpu.GpuDelegate      // Wajib untuk GPU
 import org.tensorflow.lite.support.common.ops.NormalizeOp
 import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
@@ -15,7 +18,6 @@ import java.nio.channels.FileChannel
 import kotlin.math.max
 import kotlin.math.min
 
-// Data class untuk hasil deteksi
 data class YoloResult(
     val boundingBox: RectF,
     val label: String,
@@ -24,19 +26,52 @@ data class YoloResult(
 
 class YoloDetector(
     private val context: Context,
-    private val modelName: String,
+    private val modelName: String, // Pastikan ini best_float32.tflite jika pakai GPU
     private val labels: List<String>
 ) {
     private var interpreter: Interpreter? = null
+    private var gpuDelegate: GpuDelegate? = null
+
+    // Default size, nanti menyesuaikan model
     private var inputImageWidth = 640
     private var inputImageHeight = 640
-    private var numElements = 8400 // Jumlah anchors YOLO standard
-    private var numOutputChannels = 4 + labels.size // cx, cy, w, h + classes
+
+    private var numElements = 8400
+    private var numOutputChannels = 4 + labels.size
 
     init {
         val options = Interpreter.Options()
-        options.setNumThreads(4)
-        interpreter = Interpreter(loadModelFile(modelName), options)
+
+        // --- AKTIFKAN GPU (SUPAYA 30 FPS LAGI) ---
+        val compatList = CompatibilityList()
+        if (compatList.isDelegateSupportedOnThisDevice) {
+            val delegateOptions = compatList.bestOptionsForThisDevice
+            gpuDelegate = GpuDelegate(delegateOptions)
+            options.addDelegate(gpuDelegate)
+            Log.d("YoloDetector", "✅ GPU Delegate AKTIF (Mode Cepat)")
+        } else {
+            options.setNumThreads(4)
+            Log.d("YoloDetector", "⚠️ GPU tidak support, menggunakan CPU")
+        }
+
+        try {
+            interpreter = Interpreter(loadModelFile(modelName), options)
+
+            // Baca ukuran input otomatis
+            val inputTensor = interpreter?.getInputTensor(0)
+            if (inputTensor != null) {
+                val shape = inputTensor.shape()
+                inputImageWidth = shape[1]
+                inputImageHeight = shape[2]
+            }
+        } catch (e: Exception) {
+            Log.e("YoloDetector", "Gagal memuat model: ${e.message}")
+        }
+    }
+
+    fun close() {
+        interpreter?.close()
+        gpuDelegate?.close()
     }
 
     private fun loadModelFile(modelName: String): MappedByteBuffer {
@@ -51,38 +86,30 @@ class YoloDetector(
     fun detect(bitmap: Bitmap): List<YoloResult> {
         if (interpreter == null) return emptyList()
 
-        // 1. Preprocessing: Resize & Normalize (0-255 -> 0.0-1.0)
         val imageProcessor = ImageProcessor.Builder()
-            .add(ResizeOp(inputImageWidth, inputImageHeight, ResizeOp.ResizeMethod.BILINEAR))
-            .add(NormalizeOp(0f, 255f)) // Normalisasi Float32
+            .add(ResizeOp(inputImageHeight, inputImageWidth, ResizeOp.ResizeMethod.BILINEAR))
+            .add(NormalizeOp(0f, 255f)) // Normalisasi standar (0..1)
             .build()
 
         var tensorImage = TensorImage(DataType.FLOAT32)
         tensorImage.load(bitmap)
         tensorImage = imageProcessor.process(tensorImage)
 
-        // 2. Siapkan Output Buffer
-        // Output YOLOv8/11 biasanya [1, 4+Classes, 8400] -> [1, 9, 8400]
         val outputBuffer = Array(1) { Array(numOutputChannels) { FloatArray(numElements) } }
 
-        // 3. Run Inference
         interpreter?.run(tensorImage.buffer, outputBuffer)
 
-        // 4. Post-processing (Parsing Output & NMS)
         return processOutput(outputBuffer)
     }
 
     private fun processOutput(output: Array<Array<FloatArray>>): List<YoloResult> {
         val detections = ArrayList<YoloResult>()
-        val rawOutput = output[0] // [9, 8400]
+        val rawOutput = output[0]
 
-        // Iterasi melalui 8400 anchors (kolom)
         for (i in 0 until numElements) {
-            // Cari skor kelas tertinggi
             var maxScore = 0f
             var classIndex = -1
 
-            // Baris 4 sampai 8 adalah skor kelas (indeks 0-3 adalah koordinat)
             for (c in 0 until labels.size) {
                 val score = rawOutput[4 + c][i]
                 if (score > maxScore) {
@@ -91,30 +118,42 @@ class YoloDetector(
                 }
             }
 
-            // Filter Threshold (misal 50%)
-            if (maxScore > 0.5f) {
-                // Ambil koordinat (cx, cy, w, h)
+            // Threshold (Coba turunkan ke 0.4f jika kotak jarang muncul)
+            if (maxScore > 0.4f) {
                 val cx = rawOutput[0][i]
                 val cy = rawOutput[1][i]
                 val w = rawOutput[2][i]
                 val h = rawOutput[3][i]
 
-                // Konversi ke (left, top, right, bottom)
-                val left = cx - (w / 2)
-                val top = cy - (h / 2)
-                val right = cx + (w / 2)
-                val bottom = cy + (h / 2)
+                // --- FIX BOUNDING BOX HILANG ---
+                // Cek apakah output model dalam PIKSEL atau NORMALIZED
+                // Jika angka > 1.0, berarti piksel -> Harus dibagi 640
+                var normCx = cx
+                var normCy = cy
+                var normW = w
+                var normH = h
+
+                if (cx > 1.0f || w > 1.0f) {
+                    normCx = cx / inputImageWidth
+                    normCy = cy / inputImageHeight
+                    normW = w / inputImageWidth
+                    normH = h / inputImageHeight
+                }
+
+                // Hitung koordinat kiri-atas (Normalized 0..1)
+                val left = normCx - (normW / 2)
+                val top = normCy - (normH / 2)
+                val right = normCx + (normW / 2)
+                val bottom = normCy + (normH / 2)
 
                 val rect = RectF(left, top, right, bottom)
                 detections.add(YoloResult(rect, labels[classIndex], maxScore))
             }
         }
-
         return nms(detections)
     }
 
-    // Non-Max Suppression (Menghapus kotak tumpang tindih)
-    private fun nms(detections: List<YoloResult>, iouThreshold: Float = 0.5f): List<YoloResult> {
+    private fun nms(detections: List<YoloResult>, iouThreshold: Float = 0.45f): List<YoloResult> {
         if (detections.isEmpty()) return emptyList()
 
         val sorted = detections.sortedByDescending { it.score }
@@ -130,7 +169,7 @@ class YoloDetector(
                     if (active[j]) {
                         val boxB = sorted[j]
                         if (calculateIoU(boxA.boundingBox, boxB.boundingBox) > iouThreshold) {
-                            active[j] = false // Hapus box yang tumpang tindih
+                            active[j] = false
                         }
                     }
                 }
