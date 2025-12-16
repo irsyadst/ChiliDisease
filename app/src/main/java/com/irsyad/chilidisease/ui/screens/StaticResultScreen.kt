@@ -53,7 +53,7 @@ fun StaticResultScreen(onBackClick: () -> Unit) {
         if (labels.isNotEmpty()) YoloDetector(context, "best_float32.tflite", labels) else null
     }
 
-    // Paint untuk teks (Warnanya akan diubah dinamis nanti)
+    // Paint untuk teks
     val textPaint = remember {
         Paint().apply {
             textSize = 40f
@@ -76,7 +76,11 @@ fun StaticResultScreen(onBackClick: () -> Unit) {
             val topOffset = (size - bitmap.height) / 2f
             canvas.drawBitmap(bitmap, leftOffset, topOffset, null)
 
-            val results = yoloDetector.detect(paddedBitmap)
+            // --- PERBAIKAN DISINI ---
+            // Pass '0' untuk rotasi karena gambar galeri biasanya sudah tegak
+            val results = yoloDetector.detect(paddedBitmap, 0)
+            // ------------------------
+
             val validResults = results.filter { it.score > 0.5f }
 
             if (validResults.isNotEmpty()) {
@@ -146,10 +150,9 @@ fun StaticResultScreen(onBackClick: () -> Unit) {
                                         style = Stroke(width = 4.dp.toPx())
                                     )
 
-                                    // --- LOGIKA WARNA TEKS DINAMIS ---
+                                    // --- WARNA TEKS DINAMIS ---
                                     val isDarkBackground = isColorDark(colorInt)
                                     textPaint.color = if (isDarkBackground) android.graphics.Color.WHITE else android.graphics.Color.BLACK
-                                    // ----------------------------------
 
                                     val labelText = "${res.label} ${(res.score * 100).toInt()}%"
                                     val textBounds = android.graphics.Rect()
@@ -181,10 +184,9 @@ fun StaticResultScreen(onBackClick: () -> Unit) {
                         ) {
                             items(detections) { detection ->
                                 DetectionCard(detection) {
-                                    // PANGGIL FUNGSI DARI UTILS DISINI
                                     val info = getDiseaseByLabel(detection.label)
                                     if (info != null) {
-                                        selectedDisease = info // Ini akan membuka DetailView
+                                        selectedDisease = info
                                     }
                                 }
                             }
@@ -238,7 +240,6 @@ fun DetectionCard(detection: YoloResult, onClick: () -> Unit) {
     }
 }
 
-// --- FUNGSI HELPER UNTUK CEK KECERAHAN WARNA ---
 private fun isColorDark(color: Int): Boolean {
     val red = android.graphics.Color.red(color) / 255.0
     val green = android.graphics.Color.green(color) / 255.0

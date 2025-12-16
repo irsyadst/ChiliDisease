@@ -34,7 +34,7 @@ fun AboutScreen() {
         // --- TAMPILAN LIST ---
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
             Text(
-                "Ensiklopedia Penyakit",
+                "Tentang Tanamanan",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,

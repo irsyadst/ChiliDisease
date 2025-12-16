@@ -66,7 +66,7 @@ fun HomeScreen(
         HomeMenuItem("Live Detection", Icons.Filled.Videocam, MaterialTheme.colorScheme.primary, onLiveScanClick),
         HomeMenuItem("Ambil Foto", Icons.Filled.CameraAlt, Color(0xFFE91E63), { cameraLauncher.launch(null) }),
         HomeMenuItem("Dari Galeri", Icons.Filled.Image, Color(0xFFFF9800), { galleryLauncher.launch("image/*") }),
-        HomeMenuItem("Tentang Penyakit", Icons.Filled.Info, Color(0xFF4CAF50), onAboutClick)
+        HomeMenuItem("Tentang Tamanan", Icons.Filled.Info, Color(0xFF4CAF50), onAboutClick)
     )
 
     Column(

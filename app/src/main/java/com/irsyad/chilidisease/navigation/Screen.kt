@@ -12,6 +12,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 sealed class Screen(val route: String, val title: String, val selectedIcon: ImageVector, val unselectedIcon: ImageVector) {
     object Home : Screen("home", "Home", Icons.Filled.Home, Icons.Outlined.Home)
     object Scan : Screen("scan", "Scan", Icons.Filled.Camera, Icons.Outlined.Camera)
-    object About : Screen("about", "Penyakit", Icons.Filled.Info, Icons.Outlined.Info)
+    object About : Screen("about", "Tentang Tanaman", Icons.Filled.Info, Icons.Outlined.Info)
     object StaticResult : Screen("static_result", "Hasil Analisis", Icons.Filled.Info, Icons.Outlined.Info)
 }

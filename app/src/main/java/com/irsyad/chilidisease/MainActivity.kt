@@ -22,7 +22,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 
-// Import Screens & Utils
+// Pastikan import Screen & Utils Anda sesuai
 import com.irsyad.chilidisease.navigation.Screen
 import com.irsyad.chilidisease.ui.screens.AboutScreen
 import com.irsyad.chilidisease.ui.screens.HomeScreen
@@ -55,7 +55,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        cameraExecutor.shutdown()
+        // --- POIN 5: PEMBERSIHAN MEMORI ---
+        cameraExecutor.shutdown() // Matikan thread kamera
+        ImageHolder.image = null // Hapus bitmap statis agar tidak memory leak
     }
 }
 
@@ -64,18 +66,12 @@ fun MainApp(cameraExecutor: ExecutorService) {
     val navController = rememberNavController()
     val items = listOf(Screen.Home, Screen.Scan, Screen.About)
 
-    // --- FUNGSI NAVIGASI PINTAR ---
-    // Fungsi ini memastikan saat pindah menu (baik dari tombol Home maupun BottomBar),
-    // perilakunya konsisten: tidak menumpuk layar, tapi berpindah tab.
     val navigateToTab = { route: String ->
         navController.navigate(route) {
-            // Pop up ke start destination (Home) agar tidak ada tumpukan back stack yang aneh
             popUpTo(navController.graph.findStartDestination().id) {
                 saveState = true
             }
-            // Hindari membuat instance ganda jika diklik berulang
             launchSingleTop = true
-            // Restore state (posisi scroll, dll) jika kembali
             restoreState = true
         }
     }
@@ -85,7 +81,6 @@ fun MainApp(cameraExecutor: ExecutorService) {
             val navBackStackEntry by navController.currentBackStackEntryAsState()
             val currentRoute = navBackStackEntry?.destination?.route
 
-            // Sembunyikan BottomBar hanya di layar Hasil Foto
             if (currentRoute != Screen.StaticResult.route) {
                 NavigationBar {
                     items.forEach { screen ->
@@ -93,7 +88,13 @@ fun MainApp(cameraExecutor: ExecutorService) {
                             icon = { Icon(if (currentRoute == screen.route) screen.selectedIcon else screen.unselectedIcon, contentDescription = screen.title) },
                             label = { Text(screen.title) },
                             selected = currentRoute == screen.route,
-                            onClick = { navigateToTab(screen.route) } // Gunakan fungsi navigasi pintar
+                            onClick = {
+                                // BERSIHKAN GAMBAR JIKA PINDAH TAB
+                                if (currentRoute == Screen.StaticResult.route) {
+                                    ImageHolder.image = null
+                                }
+                                navigateToTab(screen.route)
+                            }
                         )
                     }
                 }
@@ -107,12 +108,10 @@ fun MainApp(cameraExecutor: ExecutorService) {
         ) {
             composable(Screen.Home.route) {
                 HomeScreen(
-                    // Update aksi tombol agar menggunakan navigasi tab
                     onLiveScanClick = { navigateToTab(Screen.Scan.route) },
                     onAboutClick = { navigateToTab(Screen.About.route) },
                     onImagePicked = { bitmap ->
                         ImageHolder.image = bitmap
-                        // Untuk ke StaticResult tetap pakai navigate biasa (Push) karena ini sub-menu
                         navController.navigate(Screen.StaticResult.route)
                     }
                 )
@@ -120,7 +119,11 @@ fun MainApp(cameraExecutor: ExecutorService) {
             composable(Screen.Scan.route) { ScanScreen(cameraExecutor) }
             composable(Screen.About.route) { AboutScreen() }
             composable(Screen.StaticResult.route) {
-                StaticResultScreen(onBackClick = { navController.popBackStack() })
+                StaticResultScreen(onBackClick = {
+                    // BERSIHKAN MEMORI SAAT BACK
+                    ImageHolder.image = null
+                    navController.popBackStack()
+                })
             }
         }
     }

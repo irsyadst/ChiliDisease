@@ -1,5 +1,6 @@
 package com.irsyad.chilidisease.ui.screens
 
+import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -47,6 +48,7 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val mainExecutor = ContextCompat.getMainExecutor(context)
 
+    // State
     var detections by remember { mutableStateOf<List<YoloResult>>(emptyList()) }
     var imageSourceSize by remember { mutableStateOf(AndroidSize(0, 0)) }
     var fps by remember { mutableIntStateOf(0) }
@@ -60,6 +62,7 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
         if (labels.isNotEmpty()) YoloDetector(context, "best_float32.tflite", labels) else null
     }
 
+    // Paint dipindah ke remember agar tidak dibuat berulang kali (Hemat Memori)
     val textPaint = remember {
         Paint().apply {
             color = android.graphics.Color.WHITE
@@ -74,6 +77,7 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
         Paint().apply { style = Paint.Style.FILL }
     }
 
+    // Pastikan Detector ditutup saat keluar layar
     DisposableEffect(Unit) {
         onDispose { yoloDetector?.close() }
     }
@@ -84,10 +88,7 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
                 val previewView = PreviewView(ctx)
                 previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                 previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
-
-                // --- FIX LAYAR MATI: Jaga layar tetap menyala ---
                 previewView.keepScreenOn = true
-                // ----------------------------------------------
 
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                 cameraProviderFuture.addListener({
@@ -98,6 +99,7 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
                         .build()
                         .also { it.setSurfaceProvider(previewView.surfaceProvider) }
 
+                    // Resolusi Analisis (Lebih rendah = Lebih Cepat & Hemat RAM)
                     val resolutionSelector = ResolutionSelector.Builder()
                         .setResolutionStrategy(
                             ResolutionStrategy(
@@ -112,48 +114,78 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                         .build()
-                        .also {
-                            it.setAnalyzer(cameraExecutor) { imageProxy ->
-                                val startTime = System.currentTimeMillis()
-                                frameCount++
-                                if (startTime - lastFpsTime >= 1000) {
-                                    val currentFps = frameCount
-                                    mainExecutor.execute { fps = currentFps }
-                                    frameCount = 0
-                                    lastFpsTime = startTime
-                                }
+                        .also { analysis ->
+                            // Buffer Bitmap (Reuse Memory)
+                            var bitmapBuffer: Bitmap? = null
 
-                                val bitmap = imageProxyToBitmap(imageProxy)
-                                if (bitmap != null && yoloDetector != null) {
-                                    val results = yoloDetector.detect(bitmap)
-                                    val endTime = System.currentTimeMillis()
-                                    val processTime = endTime - startTime
+                            analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                                // --- UPDATE MEMORY MANAGEMENT: GUNAKAN TRY-FINALLY ---
+                                try {
+                                    val startTime = System.currentTimeMillis()
+                                    frameCount++
+                                    if (startTime - lastFpsTime >= 1000) {
+                                        val currentFps = frameCount
+                                        mainExecutor.execute { fps = currentFps }
+                                        frameCount = 0
+                                        lastFpsTime = startTime
+                                    }
 
-                                    val validResults = results.filter { it.score > 0.3f }
+                                    // Konversi dengan Buffer (Hemat Memori)
+                                    val bitmap = imageProxyToBitmap(imageProxy, bitmapBuffer)
+                                    bitmapBuffer = bitmap // Simpan referensi untuk dipakai ulang
 
-                                    mainExecutor.execute {
-                                        inferenceTime = processTime
-                                        if (validResults.isNotEmpty()) {
-                                            detections = validResults.map { res ->
-                                                val rawBox = res.boundingBox
-                                                val isNormalized = rawBox.width() < 2.0f
-                                                val scaleFactor = if (isNormalized) 1f else 640f
+                                    if (bitmap != null && yoloDetector != null) {
+                                        val rotation = imageProxy.imageInfo.rotationDegrees
 
-                                                val normBox = RectF(
-                                                    rawBox.left / scaleFactor,
-                                                    rawBox.top / scaleFactor,
-                                                    rawBox.right / scaleFactor,
-                                                    rawBox.bottom / scaleFactor
-                                                )
-                                                res.copy(boundingBox = normBox)
+                                        // Detect (Logika Rotasi TFLite Tetap Ada)
+                                        val results = yoloDetector.detect(bitmap, rotation)
+                                        val endTime = System.currentTimeMillis()
+                                        val processTime = endTime - startTime
+
+                                        val validResults = results.filter { it.score > 0.45f }
+
+                                        mainExecutor.execute {
+                                            inferenceTime = processTime
+                                            if (validResults.isNotEmpty()) {
+                                                detections = validResults.map { res ->
+                                                    val rawBox = res.boundingBox
+
+                                                    // --- LOGIKA NORMALISASI TETAP DIPERTAHANKAN ---
+                                                    val isNormalized = rawBox.width() < 2.0f
+                                                    val scaleFactor = if (isNormalized) 1f else 640f
+
+                                                    val normBox = RectF(
+                                                        rawBox.left / scaleFactor,
+                                                        rawBox.top / scaleFactor,
+                                                        rawBox.right / scaleFactor,
+                                                        rawBox.bottom / scaleFactor
+                                                    )
+
+                                                    normBox.left = normBox.left.coerceIn(0f, 1f)
+                                                    normBox.top = normBox.top.coerceIn(0f, 1f)
+                                                    normBox.right = normBox.right.coerceIn(0f, 1f)
+                                                    normBox.bottom = normBox.bottom.coerceIn(0f, 1f)
+
+                                                    res.copy(boundingBox = normBox)
+                                                }
+
+                                                // Update ukuran sumber berdasarkan rotasi
+                                                val isRotated = rotation % 180 != 0
+                                                val displayWidth = if (isRotated) bitmap.height else bitmap.width
+                                                val displayHeight = if (isRotated) bitmap.width else bitmap.height
+
+                                                imageSourceSize = AndroidSize(displayWidth, displayHeight)
+                                            } else {
+                                                detections = emptyList()
                                             }
-                                            imageSourceSize = AndroidSize(bitmap.width, bitmap.height)
-                                        } else {
-                                            detections = emptyList()
                                         }
                                     }
+                                } catch (e: Exception) {
+                                    Log.e("ScanScreen", "Error analyzing image", e)
+                                } finally {
+                                    // PENTING: Wajib close di finally agar tidak bocor jika ada error
+                                    imageProxy.close()
                                 }
-                                imageProxy.close()
                             }
                         }
                     try {
@@ -168,6 +200,7 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
             modifier = Modifier.fillMaxSize()
         )
 
+        // Canvas Overlay (Tetap menggunakan logika FILL_CENTER yang sudah diperbaiki)
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (detections.isNotEmpty() && imageSourceSize.width > 0) {
                 val screenW = size.width
@@ -217,7 +250,6 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
 
                     bgPaint.color = colorInt
 
-                    // Background Label
                     drawContext.canvas.nativeCanvas.drawRect(
                         left,
                         top - textBounds.height() - (padding * 2),
@@ -226,7 +258,6 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
                         bgPaint
                     )
 
-                    // Text Label (Warna Dinamis)
                     val isDarkBackground = isColorDark(colorInt)
                     textPaint.color = if (isDarkBackground) android.graphics.Color.WHITE else android.graphics.Color.BLACK
 
@@ -244,13 +275,12 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
             Column(horizontalAlignment = Alignment.End) {
                 Text("FPS: $fps", color = Color.Green, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                 Text("Time: ${inferenceTime}ms", color = Color.Yellow, style = MaterialTheme.typography.labelSmall)
-                Text("Res: ${imageSourceSize.width}x${imageSourceSize.height}", color = Color.White, style = MaterialTheme.typography.labelSmall)
+                Text("Src: ${imageSourceSize.width}x${imageSourceSize.height}", color = Color.White, style = MaterialTheme.typography.labelSmall)
             }
         }
     }
 }
 
-// Fungsi helper cek kecerahan warna
 private fun isColorDark(color: Int): Boolean {
     val red = android.graphics.Color.red(color) / 255.0
     val green = android.graphics.Color.green(color) / 255.0

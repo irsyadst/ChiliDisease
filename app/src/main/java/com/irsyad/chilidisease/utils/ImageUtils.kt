@@ -2,12 +2,11 @@ package com.irsyad.chilidisease.utils
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.util.Log
 import androidx.camera.core.ImageProxy
 import androidx.compose.ui.graphics.Color
 
-// Singleton untuk menyimpan gambar antar layar
+// Singleton untuk menyimpan gambar antar layar (contoh: Home -> Result)
 object ImageHolder {
     var image: Bitmap? = null
 }
@@ -32,23 +31,40 @@ fun getColorForLabel(label: String): Color {
     }
 }
 
-// Konversi ImageProxy ke Bitmap (dengan Rotasi)
-fun imageProxyToBitmap(image: ImageProxy): Bitmap? {
+/**
+ * Mengubah ImageProxy (YUV) menjadi Bitmap.
+ *
+ * @param image ImageProxy dari CameraX
+ * @param bitmapBuffer (Opsional) Bitmap yang sudah ada untuk digunakan ulang (Reusing Memory).
+ * Ini SANGAT PENTING untuk performa FPS tinggi.
+ * @return Bitmap yang berisi data piksel (tanpa rotasi, rotasi ditangani Detector).
+ */
+fun imageProxyToBitmap(image: ImageProxy, bitmapBuffer: Bitmap? = null): Bitmap? {
     val planeProxy = image.planes[0]
     val buffer = planeProxy.buffer
     val pixelStride = planeProxy.pixelStride
     val rowStride = planeProxy.rowStride
     val rowPadding = rowStride - pixelStride * image.width
 
-    val bitmap = Bitmap.createBitmap(
-        image.width + rowPadding / pixelStride,
-        image.height,
-        Bitmap.Config.ARGB_8888
-    )
-    bitmap.copyPixelsFromBuffer(buffer)
+    val width = image.width + rowPadding / pixelStride
+    val height = image.height
 
-    val matrix = Matrix()
-    matrix.postRotate(image.imageInfo.rotationDegrees.toFloat())
+    // 1. Cek apakah kita bisa menggunakan buffer yang ada
+    val bitmap = if (bitmapBuffer != null &&
+        bitmapBuffer.width == width &&
+        bitmapBuffer.height == height) {
+        bitmapBuffer // Gunakan ulang memory
+    } else {
+        // Buat baru jika belum ada atau ukuran berubah (hanya terjadi sesekali)
+        Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    }
 
-    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    // 2. Salin data pixel dari Buffer kamera ke Bitmap
+    buffer.rewind()
+    bitmap?.copyPixelsFromBuffer(buffer)
+
+    // Catatan: Kita TIDAK melakukan rotasi matrix di sini.
+    // Rotasi dilakukan oleh TFLite (GPU/NNAPI) yang jauh lebih cepat.
+
+    return bitmap
 }
