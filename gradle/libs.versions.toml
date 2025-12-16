@@ -9,11 +9,11 @@ lifecycleRuntimeKtx = "2.10.0"
 activityCompose = "1.12.0"
 composeBom = "2025.11.01"
 camerax = "1.5.1"
-accompanist-permissions = "0.36.0"
+accompanist-permissions = "0.37.3"
 materialIconsExtended = "1.7.8"
 navigationCompose = "2.9.6"
-tflite = "2.16.1"
-tflite-support = "0.4.4"
+tflite = "2.17.0"
+tflite-support = "0.5.0"
 
 [libraries]
 androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }

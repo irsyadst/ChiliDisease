@@ -6,8 +6,8 @@ import android.graphics.RectF
 import android.util.Log
 import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
-import org.tensorflow.lite.gpu.CompatibilityList // Wajib untuk GPU
-import org.tensorflow.lite.gpu.GpuDelegate      // Wajib untuk GPU
+import org.tensorflow.lite.gpu.CompatibilityList
+import org.tensorflow.lite.gpu.GpuDelegate
 import org.tensorflow.lite.support.common.ops.NormalizeOp
 import org.tensorflow.lite.support.image.ImageProcessor
 import org.tensorflow.lite.support.image.TensorImage
@@ -26,49 +26,50 @@ data class YoloResult(
 
 class YoloDetector(
     private val context: Context,
-    private val modelName: String, // Pastikan ini best_float32.tflite jika pakai GPU
+    private val modelName: String,
     private val labels: List<String>
 ) {
     private var interpreter: Interpreter? = null
     private var gpuDelegate: GpuDelegate? = null
 
-    // Default size, nanti menyesuaikan model
     private var inputImageWidth = 640
     private var inputImageHeight = 640
-
     private var numElements = 8400
     private var numOutputChannels = 4 + labels.size
 
     init {
         val options = Interpreter.Options()
 
-        // --- AKTIFKAN GPU (SUPAYA 30 FPS LAGI) ---
-        val compatList = CompatibilityList()
-        if (compatList.isDelegateSupportedOnThisDevice) {
+        // --- UBAH BAGIAN INI: PAKSA GPU AKTIF ---
+        try {
+            // Kita coba paksa buat GPU Delegate tanpa cek isDelegateSupportedOnThisDevice
+            val compatList = CompatibilityList()
             val delegateOptions = compatList.bestOptionsForThisDevice
+
+            // Inisialisasi GPU
             gpuDelegate = GpuDelegate(delegateOptions)
             options.addDelegate(gpuDelegate)
-            Log.d("YoloDetector", "✅ GPU Delegate AKTIF (Mode Cepat)")
-        } else {
-            options.setNumThreads(4)
-            Log.d("YoloDetector", "⚠️ GPU tidak support, menggunakan CPU")
+
+            Log.d("YoloDetector", "✅ GPU Delegate BERHASIL Dipaksa Aktif!")
+        } catch (e: Exception) {
+            // Jika dipaksa tetap gagal (crash), baru balik ke CPU
+            Log.e("YoloDetector", "❌ GPU Gagal (Force Fail): ${e.message}")
+            options.setNumThreads(4) // Fallback CPU
         }
+        // -----------------------------------------
 
         try {
             interpreter = Interpreter(loadModelFile(modelName), options)
 
-            // Baca ukuran input otomatis
-            val inputTensor = interpreter?.getInputTensor(0)
-            if (inputTensor != null) {
-                val shape = inputTensor.shape()
-                inputImageWidth = shape[1]
-                inputImageHeight = shape[2]
+            val inputShape = interpreter?.getInputTensor(0)?.shape()
+            if (inputShape != null) {
+                inputImageWidth = inputShape[1]
+                inputImageHeight = inputShape[2]
             }
         } catch (e: Exception) {
-            Log.e("YoloDetector", "Gagal memuat model: ${e.message}")
+            Log.e("YoloDetector", "Error Init Model: ${e.message}")
         }
     }
-
     fun close() {
         interpreter?.close()
         gpuDelegate?.close()
@@ -87,8 +88,8 @@ class YoloDetector(
         if (interpreter == null) return emptyList()
 
         val imageProcessor = ImageProcessor.Builder()
-            .add(ResizeOp(inputImageHeight, inputImageWidth, ResizeOp.ResizeMethod.BILINEAR))
-            .add(NormalizeOp(0f, 255f)) // Normalisasi standar (0..1)
+            .add(ResizeOp(inputImageWidth, inputImageHeight, ResizeOp.ResizeMethod.BILINEAR))
+            .add(NormalizeOp(0f, 255f))
             .build()
 
         var tensorImage = TensorImage(DataType.FLOAT32)
@@ -118,16 +119,13 @@ class YoloDetector(
                 }
             }
 
-            // Threshold (Coba turunkan ke 0.4f jika kotak jarang muncul)
-            if (maxScore > 0.4f) {
+            if (maxScore > 0.5f) {
                 val cx = rawOutput[0][i]
                 val cy = rawOutput[1][i]
                 val w = rawOutput[2][i]
                 val h = rawOutput[3][i]
 
-                // --- FIX BOUNDING BOX HILANG ---
-                // Cek apakah output model dalam PIKSEL atau NORMALIZED
-                // Jika angka > 1.0, berarti piksel -> Harus dibagi 640
+                // Normalisasi Koordinat
                 var normCx = cx
                 var normCy = cy
                 var normW = w
@@ -140,7 +138,6 @@ class YoloDetector(
                     normH = h / inputImageHeight
                 }
 
-                // Hitung koordinat kiri-atas (Normalized 0..1)
                 val left = normCx - (normW / 2)
                 val top = normCy - (normH / 2)
                 val right = normCx + (normW / 2)

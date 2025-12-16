@@ -1,12 +1,16 @@
 package com.irsyad.chilidisease.ui.screens
 
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.util.Log
+import android.util.Size as AndroidSize
 import androidx.camera.core.AspectRatio
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
@@ -19,16 +23,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size as ComposeSize
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.irsyad.chilidisease.YoloDetector
@@ -37,52 +40,42 @@ import com.irsyad.chilidisease.utils.getColorForLabel
 import com.irsyad.chilidisease.utils.imageProxyToBitmap
 import com.irsyad.chilidisease.utils.loadLabels
 import java.util.concurrent.ExecutorService
-import androidx.compose.ui.geometry.Size as ComposeSize
-import android.graphics.RectF
 
 @Composable
 fun ScanScreen(cameraExecutor: ExecutorService) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    // Executor utama untuk update UI
     val mainExecutor = ContextCompat.getMainExecutor(context)
 
     var detections by remember { mutableStateOf<List<YoloResult>>(emptyList()) }
-    var summaryText by remember { mutableStateOf("Mencari...") }
-    var imageSourceSize by remember { mutableStateOf(android.util.Size(0, 0)) }
+    var imageSourceSize by remember { mutableStateOf(AndroidSize(0, 0)) }
     var fps by remember { mutableIntStateOf(0) }
     var inferenceTime by remember { mutableLongStateOf(0L) }
     var frameCount by remember { mutableIntStateOf(0) }
     var lastFpsTime by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
     val labels = remember { loadLabels(context, "labels.txt") }
+
     val yoloDetector = remember {
         if (labels.isNotEmpty()) YoloDetector(context, "best_float32.tflite", labels) else null
     }
 
-    // Persiapan Paint untuk Teks (Label)
     val textPaint = remember {
         Paint().apply {
             color = android.graphics.Color.WHITE
-            textSize = 40f // Ukuran teks label
+            textSize = 40f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             style = Paint.Style.FILL
             isAntiAlias = true
         }
     }
 
-    // Persiapan Paint untuk Latar Belakang Teks
-    val textBgPaint = remember {
-        Paint().apply {
-            style = Paint.Style.FILL
-            // Warna akan diubah dinamis sesuai penyakit
-        }
+    val bgPaint = remember {
+        Paint().apply { style = Paint.Style.FILL }
     }
 
     DisposableEffect(Unit) {
-        onDispose {
-            yoloDetector?.close()
-        }
+        onDispose { yoloDetector?.close() }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -92,12 +85,30 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
                 previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                 previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
 
+                // --- FIX LAYAR MATI: Jaga layar tetap menyala ---
+                previewView.keepScreenOn = true
+                // ----------------------------------------------
+
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                 cameraProviderFuture.addListener({
                     val cameraProvider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+
+                    val preview = Preview.Builder()
+                        .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                        .build()
+                        .also { it.setSurfaceProvider(previewView.surfaceProvider) }
+
+                    val resolutionSelector = ResolutionSelector.Builder()
+                        .setResolutionStrategy(
+                            ResolutionStrategy(
+                                AndroidSize(640, 480),
+                                ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                            )
+                        )
+                        .build()
 
                     val imageAnalyzer = ImageAnalysis.Builder()
+                        .setResolutionSelector(resolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                         .build()
@@ -118,13 +129,12 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
                                     val endTime = System.currentTimeMillis()
                                     val processTime = endTime - startTime
 
-                                    val validResults = results.filter { it.score > 0.5f }
+                                    val validResults = results.filter { it.score > 0.3f }
 
                                     mainExecutor.execute {
                                         inferenceTime = processTime
-
                                         if (validResults.isNotEmpty()) {
-                                            val mappedDetections = validResults.map { res ->
+                                            detections = validResults.map { res ->
                                                 val rawBox = res.boundingBox
                                                 val isNormalized = rawBox.width() < 2.0f
                                                 val scaleFactor = if (isNormalized) 1f else 640f
@@ -137,15 +147,9 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
                                                 )
                                                 res.copy(boundingBox = normBox)
                                             }
-                                            detections = mappedDetections
-                                            imageSourceSize = android.util.Size(bitmap.width, bitmap.height)
-
-                                            val best = validResults.maxByOrNull { it.score }!!
-                                            val count = validResults.size
-                                            summaryText = if (count > 1) "${best.label} (+${count - 1} lainnya)" else "${best.label} ${(best.score * 100).toInt()}%"
+                                            imageSourceSize = AndroidSize(bitmap.width, bitmap.height)
                                         } else {
                                             detections = emptyList()
-                                            summaryText = "Aman"
                                         }
                                     }
                                 }
@@ -164,7 +168,6 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
             modifier = Modifier.fillMaxSize()
         )
 
-        // --- LAYER CANVAS (GAMBAR KOTAK & LABEL) ---
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (detections.isNotEmpty() && imageSourceSize.width > 0) {
                 val screenW = size.width
@@ -192,65 +195,66 @@ fun ScanScreen(cameraExecutor: ExecutorService) {
 
                 detections.forEach { res ->
                     val box = res.boundingBox
-                    val color = getColorForLabel(res.label)
+                    val colorCompose = getColorForLabel(res.label)
+                    val colorInt = colorCompose.toArgb()
 
                     val left = box.left * imgW * scale + dx
                     val top = box.top * imgH * scale + dy
                     val right = box.right * imgW * scale + dx
                     val bottom = box.bottom * imgH * scale + dy
 
-                    // 1. Gambar Kotak
                     drawRect(
-                        color = color,
+                        color = colorCompose,
                         topLeft = Offset(left, top),
                         size = ComposeSize(right - left, bottom - top),
                         style = Stroke(width = 4.dp.toPx())
                     )
 
-                    // 2. Siapkan Teks Label
                     val labelText = "${res.label} ${(res.score * 100).toInt()}%"
-
-                    // Hitung ukuran background teks
-                    val textWidth = textPaint.measureText(labelText)
-                    val textHeight = textPaint.textSize
+                    val textBounds = android.graphics.Rect()
+                    textPaint.getTextBounds(labelText, 0, labelText.length, textBounds)
                     val padding = 10f
 
-                    // Set warna background sesuai warna kotak
-                    textBgPaint.color = color.toArgb()
+                    bgPaint.color = colorInt
 
-                    // Gambar Background Label (Di atas kotak)
+                    // Background Label
                     drawContext.canvas.nativeCanvas.drawRect(
                         left,
-                        top - textHeight - padding, // Posisi Y (naik ke atas)
-                        left + textWidth + (padding * 2),
+                        top - textBounds.height() - (padding * 2),
+                        left + textBounds.width() + (padding * 2),
                         top,
-                        textBgPaint
+                        bgPaint
                     )
 
-                    // Gambar Teks Label
+                    // Text Label (Warna Dinamis)
+                    val isDarkBackground = isColorDark(colorInt)
+                    textPaint.color = if (isDarkBackground) android.graphics.Color.WHITE else android.graphics.Color.BLACK
+
                     drawContext.canvas.nativeCanvas.drawText(
                         labelText,
                         left + padding,
-                        top - (padding / 2), // Sedikit di atas garis kotak
+                        top - padding - 5f,
                         textPaint
                     )
                 }
             }
         }
 
-        // Info Panel
         Box(modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp)).padding(8.dp)) {
             Column(horizontalAlignment = Alignment.End) {
                 Text("FPS: $fps", color = Color.Green, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                 Text("Time: ${inferenceTime}ms", color = Color.Yellow, style = MaterialTheme.typography.labelSmall)
-            }
-        }
-
-        // Hasil Bawah
-        Box(modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.7f)).padding(24.dp)) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Text(summaryText, color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Res: ${imageSourceSize.width}x${imageSourceSize.height}", color = Color.White, style = MaterialTheme.typography.labelSmall)
             }
         }
     }
+}
+
+// Fungsi helper cek kecerahan warna
+private fun isColorDark(color: Int): Boolean {
+    val red = android.graphics.Color.red(color) / 255.0
+    val green = android.graphics.Color.green(color) / 255.0
+    val blue = android.graphics.Color.blue(color) / 255.0
+    val luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    return luminance < 0.5
 }
